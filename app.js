@@ -1,4 +1,4 @@
-import { parseTL, fmtTL, tlYaz, tahsil, kalan, durum, rapor, bugun, gunFark, taksitPlani, siradakiVade, geciken, tlBicimle } from './core.js';
+import { parseTL, fmtTL, tlYaz, tahsil, kalan, durum, rapor, bugun, gunFark, taksitPlani, siradakiVade, geciken, tlBicimle, waNumara, csv, csvTL } from './core.js';
 
 // ---- Depolama: tüm veri tek IndexedDB kaydında, yalnızca bu cihazda ----
 // shortcut: her kayıtta tüm veri (fotoğraflar dahil) yeniden yazılır; yüzlerce fotoğrafta yavaşlarsa fotoğrafları ayrı kayda taşı.
@@ -107,6 +107,7 @@ async function alacakFormu(a) {
   const y = a || { sekil: 'kart', tarih: bugun() };
   const f = await formAc(a ? 'Alacağı düzenle' : 'Yeni alacak', `
     <label>Kime verildi<input name="kisi" required value="${esc(y.kisi)}" placeholder="Ad soyad / firma" autocomplete="off"></label>
+    <label>Telefon (isteğe bağlı)<input name="tel" type="tel" autocomplete="off" value="${esc(y.tel)}" placeholder="0532 123 45 67"></label>
     <label>Verilen meblağ (₺)<input name="verilen" required class="tl" inputmode="decimal" value="${a ? tlYaz(a.verilen) : ''}" placeholder="0,00"></label>
     <fieldset><legend>Verilme şekli</legend><div class="seg">${radio('sekil', 'kart', 'Kredi kartı', y.sekil)}${radio('sekil', 'hesap', 'Hesaptan', y.sekil)}${radio('sekil', 'elden', 'Elden', y.sekil)}</div></fieldset>
     <label class="kaynak">Verilen yer<select name="kaynak"></select></label>
@@ -141,7 +142,7 @@ async function alacakFormu(a) {
   const e = f.elements, verilen = parseTL(e.verilen.value);
   const n = {
     ...(a || { id: yeniId(), belgeler: [], tahsilatlar: [] }),
-    kisi: e.kisi.value.trim(), verilen, sekil: e.sekil.value,
+    kisi: e.kisi.value.trim(), tel: e.tel.value.trim(), verilen, sekil: e.sekil.value,
     kaynakId: e.sekil.value === 'elden' ? '' : e.kaynak.value,
     alinacak: e.alinacak.value ? parseTL(e.alinacak.value) : verilen,
     tarih: e.tarih.value, vade: e.vade.value, taksit: Number(e.taksit.value || 1), aciklama: e.aciklama.value.trim(),
@@ -200,9 +201,21 @@ function listeHTML() {
   return `<h1>Alacaklar</h1>
   <div class="ozet"><small>Alınması gereken</small><strong>${fmtTL(r.kalan)}</strong>
     <span>${r.gecmis.length ? `⚠ ${r.gecmis.length} alacağın vadesi geçti` : 'Vadesi geçen alacak yok'}</span></div>
+  ${S.alacaklar.length && (!S.sonYedek || gunFark(S.sonYedek) <= -30) ? `<div class="uyari"><span>💾 ${S.sonYedek ? `Son yedek ${-gunFark(S.sonYedek)} gün önce alındı.` : 'Henüz hiç yedek almadınız.'} Telefon kaybolursa veriler de kaybolur.</span>
+    <button class="kucuk birincil" data-act="disari">Yedek al</button></div>` : ''}
   <input class="ara" type="search" placeholder="Kişi veya açıklama ara…" value="${esc(ara)}">
   <div class="chips">${chip('acik', 'Açık')}${chip('gecmis', 'Gecikmiş')}${chip('kapandi', 'Kapanan')}${chip('hepsi', 'Tümü')}</div>
   <div id="kartlar">${kartlar()}</div>`;
+}
+
+// Hitap cinsiyetsiz ("Merhaba Ad Soyad"); mesaj WhatsApp'ta gönderilmeden önce düzenlenebilir.
+function hatirlatmaMesaji(a) {
+  const t = taksitPlani(a).find(x => x.odenen < x.tutar);
+  if (!t) return `Merhaba ${a.kisi}, kalan ${fmtTL(kalan(a))} tutarındaki ödemenizi hatırlatmak isterim. İyi günler.`;
+  const tutar = fmtTL(t.vade < bugun() ? geciken(a) : t.tutar - t.odenen);
+  return t.vade < bugun()
+    ? `Merhaba ${a.kisi}, ${tarihYaz(t.vade)} vadeli ${tutar} tutarındaki ödemenizin vadesi geçmiştir. Hatırlatmak isterim. İyi günler.`
+    : `Merhaba ${a.kisi}, ${tarihYaz(t.vade)} vadeli ${tutar} tutarındaki ödemenizi hatırlatmak isterim. İyi günler.`;
 }
 
 function detayHTML(i) {
@@ -218,6 +231,8 @@ function detayHTML(i) {
     <div class="bar"><i style="width:${oran(a)}%"></i></div>
     <span class="ust"><span>${fmtTL(tahsil(a))} alındı / ${fmtTL(a.alinacak)}</span>${rozet(a)}</span></div>
   <button class="birincil genis" data-act="tahsilat" data-id="${a.id}">＋ Tahsilat ekle</button>
+  ${a.tel ? `<div class="iki ust-bosluk"><a class="btn" href="tel:${esc(a.tel.replace(/[^\d+]/g, ''))}">📞 Ara</a>
+    ${waNumara(a.tel) && kalan(a) ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/${waNumara(a.tel)}?text=${encodeURIComponent(hatirlatmaMesaji(a))}">💬 WhatsApp'tan hatırlat</a>` : ''}</div>` : ''}
   <h2>Bilgiler</h2><dl class="kutu">
     ${satir('Verilen meblağ', fmtTL(a.verilen))}
     ${satir('Verilme şekli', SEKIL[a.sekil])}
@@ -281,6 +296,13 @@ function raporHTML() {
     const g = gunFark(taksitPlani(a).find(x => x.vade >= bugun() && x.odenen < x.tutar).vade);
     return kart(a, kalan(a) - geciken(a), `<span class="rozet ${g <= 7 ? 'turuncu' : ''}">${g ? `${g} gün kaldı` : 'Vadesi bugün'}</span>`);
   }).join('') || bos('Vadesi gelecek alacak yok.')}
+  <h2>Aylık beklenen tahsilat</h2>
+  <div class="kutu">${r.aylar.map(x => `<div class="satir ay"><span>${new Date(x.ay + '-01T00:00').toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}</span>
+    <i style="width:${(x.tutar / Math.max(...r.aylar.map(y => y.tutar))) * 100}%"></i><b>${fmtTL(x.tutar)}</b></div>`).join('') || bos('Vadesi gelecek ödeme yok.')}</div>
+  ${r.gecikmis ? `<p class="not kucuk-yazi">Bunlara ek olarak ${fmtTL(r.gecikmis)} gecikmiş alacak var.</p>` : ''}
+  <h2>Kart / hesap bazında</h2>
+  <div class="kutu">${r.kaynaklar.map(x => `<div class="satir"><div><b>${x.kaynakId === 'elden' ? 'Elden' : esc(hesapAd(x.kaynakId))}</b>
+    <small>Verilen ${fmtTL(x.verilen)} · Geri gelen ${fmtTL(x.alinan)}</small></div><b>${fmtTL(x.kalan)}</b></div>`).join('') || bos('Kayıt yok.')}</div>
   <h2>Kişi bazında <span>kalan</span></h2>
   <div class="kutu">${kisiler || bos('Kayıt yok.')}</div>
   <h2>Hesaplara yatan tahsilatlar</h2>
@@ -306,7 +328,10 @@ function ayarlarHTML() {
   <h2>Yedekleme</h2>
   <div class="kutu metin"><p>Veriler yalnızca bu telefonda saklanır. Telefon değişir ya da tarayıcı verisi silinirse kaybolur; ayda bir yedek alıp güvenli bir yere kaydedin.</p>
   <p>Son yedek: <b>${S.sonYedek ? tarihYaz(S.sonYedek) : 'hiç alınmadı'}</b></p></div>
-  <div class="iki"><button data-act="disari">⬇ Yedeği indir</button><label class="btn">⬆ Yedekten yükle<input type="file" accept="application/json,.json" hidden data-iceri></label></div>`;
+  <div class="iki ust-bosluk"><button data-act="disari">⬇ Yedeği indir</button><label class="btn">⬆ Yedekten yükle<input type="file" accept="application/json,.json" hidden data-iceri></label></div>
+  <h2>Excel'e aktar</h2>
+  <div class="kutu metin"><p>Excel'de açılabilen dosyalar (CSV). Yedek yerine geçmez; geri yüklenemez.</p></div>
+  <div class="iki ust-bosluk"><button data-act="excelAlacak">📊 Alacaklar</button><button data-act="excelTahsilat">📊 Tahsilatlar</button></div>`;
 }
 
 function render() {
@@ -317,6 +342,12 @@ function render() {
   $('.fab').hidden = !!yol && yol !== 'notlar';
   $('.fab').dataset.act = yol === 'notlar' ? 'notEkle' : 'yeni';
   $('.fab').ariaLabel = yol === 'notlar' ? 'Yeni not' : 'Yeni alacak';
+}
+
+function indir(icerik, ad, tip) {
+  const u = URL.createObjectURL(new Blob([icerik], { type: tip }));
+  Object.assign(document.createElement('a'), { href: u, download: ad }).click();
+  setTimeout(() => URL.revokeObjectURL(u), 1000);
 }
 
 // ---- Olaylar ----
@@ -407,10 +438,22 @@ const eylem = {
   async disari() {
     S.sonYedek = bugun();
     await kaydet();
-    const u = URL.createObjectURL(new Blob([JSON.stringify(S)], { type: 'application/json' }));
-    Object.assign(document.createElement('a'), { href: u, download: `vade-yedek-${bugun()}.json` }).click();
-    setTimeout(() => URL.revokeObjectURL(u), 1000);
+    indir(JSON.stringify(S), `vade-yedek-${bugun()}.json`, 'application/json');
     render();
+  },
+  excelAlacak() {
+    indir(csv([
+      ['Kişi', 'Telefon', 'Verilen', 'Verilme şekli', 'Verilen yer', 'Alınacak', 'Alınan', 'Kalan', 'Tarih', 'Vade', 'Taksit', 'Durum', 'Açıklama'],
+      ...S.alacaklar.map(a => [a.kisi, a.tel, csvTL(a.verilen), SEKIL[a.sekil], a.sekil === 'elden' ? '' : hesapAd(a.kaynakId), csvTL(a.alinacak),
+        csvTL(tahsil(a)), csvTL(kalan(a)), a.tarih, a.vade, a.taksit || 1, { acik: 'Açık', gecmis: 'Gecikmiş', kapandi: 'Kapandı' }[durum(a)], a.aciklama]),
+    ]), `vade-alacaklar-${bugun()}.csv`, 'text/csv');
+  },
+  excelTahsilat() {
+    indir(csv([
+      ['Tarih', 'Kişi', 'Tutar', 'Yattığı yer', 'Not'],
+      ...S.alacaklar.flatMap(a => a.tahsilatlar.map(t => [t.tarih, a.kisi, csvTL(t.tutar), t.hesapId ? hesapAd(t.hesapId) : 'Elden / nakit', t.not]))
+        .sort((x, y) => (x[0] < y[0] ? -1 : 1)),
+    ]), `vade-tahsilatlar-${bugun()}.csv`, 'text/csv');
   },
 };
 

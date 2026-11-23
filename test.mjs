@@ -1,6 +1,6 @@
 // Çalıştır: node test.mjs
 import assert from 'node:assert/strict';
-import { parseTL, kalan, durum, rapor, gunFark, taksitler, taksitPlani, siradakiVade, geciken, tlBicimle, hatirlatmalar, bildirimMetni } from './core.js';
+import { parseTL, kalan, durum, rapor, gunFark, taksitler, taksitPlani, siradakiVade, geciken, tlBicimle, hatirlatmalar, bildirimMetni, waNumara, csv, csvTL } from './core.js';
 
 assert.equal(parseTL('1.250,50'), 125050);
 assert.equal(parseTL('1250.5'), 125050);
@@ -62,5 +62,19 @@ const h = hatirlatmalar([gecmis, gelecek, kapali, vadesiz, a(300, '2026-11-25')]
 assert.deepEqual(h.map(x => [x.vade, x.tutar, x.gecikti]), [['2026-11-01', 700, true], ['2026-11-25', 300, false]]);
 assert.equal(bildirimMetni([gecmis], 3, bugun).baslik, '1 ödeme gecikti');
 assert.equal(bildirimMetni([gelecek], 3, bugun), null);
+
+// WhatsApp numarası
+assert.equal(waNumara('0532 123 45 67'), '905321234567');
+assert.equal(waNumara('5321234567'), '905321234567');
+assert.equal(waNumara('+90 (532) 123-45-67'), '905321234567');
+assert.equal(waNumara('123'), '');
+
+// CSV
+assert.equal(csv([['a;b', '=1+1', 'x"y'], [csvTL(125050)]]), '﻿"a;b";\'=1+1;"x""y"\r\n1250,50');
+
+// Aylık takvim ve kaynak dağılımı (taksit testi: 2. taksitin kalanı Kasım'da değil, bugün 23 Kasım < 30 Kasım)
+const ra = rapor([t, { ...gelecek, sekil: 'kart', kaynakId: 'k1' }], bugun);
+assert.deepEqual(ra.aylar, [{ ay: '2026-11', tutar: 26666 }, { ay: '2026-12', tutar: 33334 + 500 }]);
+assert.deepEqual(ra.kaynaklar.map(x => [x.kaynakId, x.verilen, x.alinan, x.kalan]), [['', 1000, 40000, 60000], ['k1', 500, 0, 500]]);
 
 console.log('Tüm testler geçti');

@@ -78,9 +78,28 @@ export function bildirimMetni(list, gun, today = bugun()) {
   return { baslik, govde };
 }
 
+// Türkiye numarası → WhatsApp biçimi (905321234567). Tanınmazsa ''.
+export function waNumara(tel) {
+  let d = String(tel ?? '').replace(/\D/g, '');
+  if (d.startsWith('0')) d = '90' + d.slice(1);
+  else if (d.length === 10 && d.startsWith('5')) d = '90' + d;
+  return /^90\d{10}$/.test(d) ? d : '';
+}
+
+// Excel (Türkçe) için ; ayraçlı CSV. Formül gibi başlayan hücreler metne çevrilir.
+export function csv(satirlar) {
+  const hucre = v => {
+    let s = String(v ?? '');
+    if (/^[=+\-@]/.test(s)) s = "'" + s;
+    return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return '﻿' + satirlar.map(r => r.map(hucre).join(';')).join('\r\n');
+}
+export const csvTL = k => (k / 100).toFixed(2).replace('.', ',');
+
 export function rapor(list, today = bugun()) {
-  const r = { verilen: 0, toplam: 0, alinan: 0, kalan: 0, gecikmis: 0, gelecekTutar: 0, gecmis: [], gelecek: [], kisiler: [], hesaplar: [] };
-  const kisi = new Map(), hesap = new Map();
+  const r = { verilen: 0, toplam: 0, alinan: 0, kalan: 0, gecikmis: 0, gelecekTutar: 0, gecmis: [], gelecek: [], kisiler: [], hesaplar: [], aylar: [], kaynaklar: [] };
+  const kisi = new Map(), hesap = new Map(), ay = new Map(), kaynak = new Map();
   for (const a of list) {
     const k = kalan(a), g = geciken(a, today);
     r.verilen += a.verilen;
@@ -95,7 +114,16 @@ export function rapor(list, today = bugun()) {
     p.adet++; p.toplam += a.alinacak; p.kalan += k;
     kisi.set(anahtar, p);
     for (const t of a.tahsilatlar) hesap.set(t.hesapId, (hesap.get(t.hesapId) || 0) + t.tutar);
+    for (const x of taksitPlani(a)) {
+      if (x.vade >= today && x.odenen < x.tutar) ay.set(x.vade.slice(0, 7), (ay.get(x.vade.slice(0, 7)) || 0) + x.tutar - x.odenen);
+    }
+    const kId = a.sekil === 'elden' ? 'elden' : a.kaynakId || '';
+    const q = kaynak.get(kId) || { kaynakId: kId, verilen: 0, alinan: 0, kalan: 0 };
+    q.verilen += a.verilen; q.alinan += tahsil(a); q.kalan += k;
+    kaynak.set(kId, q);
   }
+  r.aylar = [...ay].map(([ay, tutar]) => ({ ay, tutar })).sort((x, y) => (x.ay < y.ay ? -1 : 1));
+  r.kaynaklar = [...kaynak.values()].sort((x, y) => y.verilen - x.verilen);
   const vadeSira = (x, y) => (siradakiVade(x) < siradakiVade(y) ? -1 : 1);
   r.gecmis.sort(vadeSira);
   r.gelecek.sort(vadeSira);
