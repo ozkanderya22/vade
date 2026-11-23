@@ -1,6 +1,6 @@
 // Çalıştır: node test.mjs
 import assert from 'node:assert/strict';
-import { parseTL, kalan, durum, rapor, gunFark, taksitler, taksitPlani, siradakiVade, geciken } from './core.js';
+import { parseTL, kalan, durum, rapor, gunFark, taksitler, taksitPlani, siradakiVade, geciken, tlBicimle, hatirlatmalar, bildirimMetni } from './core.js';
 
 assert.equal(parseTL('1.250,50'), 125050);
 assert.equal(parseTL('1250.5'), 125050);
@@ -48,5 +48,19 @@ assert.equal(durum(t, '2026-12-01'), 'gecmis');
 assert.equal(geciken(t, '2026-12-01'), 26666);   // 2. taksitin ödenmeyen kısmı
 const rt = rapor([t], '2026-12-01');
 assert.equal(rt.gecikmis + rt.gelecekTutar, kalan(t));
+
+// Yazarken biçimlendirme
+assert.equal(tlBicimle('1000000'), '1.000.000');
+assert.equal(tlBicimle('1.0000'), '10.000');
+assert.equal(tlBicimle('1234,567'), '1.234,56');
+assert.equal(tlBicimle('0012'), '12');
+assert.equal(tlBicimle('abc'), '');
+for (const s of ['1000000', '1234,5', '999']) assert.equal(parseTL(tlBicimle(s)), parseTL(s));
+
+// Hatırlatmalar: gecikmiş + 3 gün içinde gelecek; uzaktaki ve kapanan yok
+const h = hatirlatmalar([gecmis, gelecek, kapali, vadesiz, a(300, '2026-11-25')], 3, bugun);
+assert.deepEqual(h.map(x => [x.vade, x.tutar, x.gecikti]), [['2026-11-01', 700, true], ['2026-11-25', 300, false]]);
+assert.equal(bildirimMetni([gecmis], 3, bugun).baslik, '1 ödeme gecikti');
+assert.equal(bildirimMetni([gelecek], 3, bugun), null);
 
 console.log('Tüm testler geçti');

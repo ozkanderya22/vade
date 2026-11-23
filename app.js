@@ -1,4 +1,4 @@
-import { parseTL, fmtTL, tlYaz, tahsil, kalan, durum, rapor, bugun, gunFark, taksitPlani, siradakiVade, geciken } from './core.js';
+import { parseTL, fmtTL, tlYaz, tahsil, kalan, durum, rapor, bugun, gunFark, taksitPlani, siradakiVade, geciken, tlBicimle } from './core.js';
 
 // ---- Depolama: tüm veri tek IndexedDB kaydında, yalnızca bu cihazda ----
 // shortcut: her kayıtta tüm veri (fotoğraflar dahil) yeniden yazılır; yüzlerce fotoğrafta yavaşlarsa fotoğrafları ayrı kayda taşı.
@@ -27,9 +27,16 @@ async function kaydet() {
 }
 
 let S = (await oku()) || { alacaklar: [], hesaplar: [] };
+S.notlar ||= []; // notlar sonradan eklendi; eski kayıtlarda yok
 let ara = '', filtre = 'acik';
 navigator.storage?.persist?.(); // tarayıcının veriyi kendiliğinden silmesini engeller
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js', { type: 'module' });
+  // Arka plan kontrolü desteklenmese de uygulama açılınca günün hatırlatması yapılır.
+  if (S.bildirim) navigator.serviceWorker.ready.then(r => r.active?.postMessage('hatirlat'));
+}
+let arkaPlan = false; // telefon uygulama kapalıyken de kontrol edebiliyor mu
+navigator.serviceWorker?.ready.then(async r => { arkaPlan = !!(await r.periodicSync?.getTags())?.includes('vade-hatirlat'); });
 
 // ---- Yardımcılar ----
 const $ = s => document.querySelector(s);
@@ -100,10 +107,10 @@ async function alacakFormu(a) {
   const y = a || { sekil: 'kart', tarih: bugun() };
   const f = await formAc(a ? 'Alacağı düzenle' : 'Yeni alacak', `
     <label>Kime verildi<input name="kisi" required value="${esc(y.kisi)}" placeholder="Ad soyad / firma" autocomplete="off"></label>
-    <label>Verilen meblağ (₺)<input name="verilen" required inputmode="decimal" value="${a ? tlYaz(a.verilen) : ''}" placeholder="0,00"></label>
+    <label>Verilen meblağ (₺)<input name="verilen" required class="tl" inputmode="decimal" value="${a ? tlYaz(a.verilen) : ''}" placeholder="0,00"></label>
     <fieldset><legend>Verilme şekli</legend><div class="seg">${radio('sekil', 'kart', 'Kredi kartı', y.sekil)}${radio('sekil', 'hesap', 'Hesaptan', y.sekil)}${radio('sekil', 'elden', 'Elden', y.sekil)}</div></fieldset>
     <label class="kaynak">Verilen yer<select name="kaynak"></select></label>
-    <label>Alınacak meblağ (₺)<input name="alinacak" inputmode="decimal" value="${a ? tlYaz(a.alinacak) : ''}" placeholder="Boş bırakılırsa verilen meblağ"></label>
+    <label>Alınacak meblağ (₺)<input name="alinacak" class="tl" inputmode="decimal" value="${a ? tlYaz(a.alinacak) : ''}" placeholder="Boş bırakılırsa verilen meblağ"></label>
     <div class="iki"><label>Veriliş tarihi<input type="date" name="tarih" required value="${y.tarih}"></label>
     <label>Vade (ilk taksit)<input type="date" name="vade" value="${y.vade || ''}"></label></div>
     <label>Taksit sayısı<input type="number" name="taksit" min="1" max="120" inputmode="numeric" value="${y.taksit || 1}"><small>1'den fazlaysa vade tarihinden başlayarak aylık eşit taksit</small></label>
@@ -148,7 +155,7 @@ async function alacakFormu(a) {
 async function tahsilatFormu(a) {
   const f = await formAc('Tahsilat ekle', `
     <p class="not">Kalan: <b>${fmtTL(kalan(a))}</b></p>
-    <label>Alınan tutar (₺)<input name="tutar" required inputmode="decimal" value="${kalan(a) ? tlYaz(kalan(a)) : ''}"></label>
+    <label>Alınan tutar (₺)<input name="tutar" required class="tl" inputmode="decimal" value="${kalan(a) ? tlYaz(kalan(a)) : ''}"></label>
     <label>Tarih<input type="date" name="tarih" required value="${bugun()}"></label>
     <label>Paranın yattığı yer<select name="hesap"></select></label>
     <label>Not<input name="not" placeholder="İsteğe bağlı"></label>`, {
@@ -226,11 +233,37 @@ function detayHTML(i) {
   }).join('')}</div>` : ''}
   <h2>Tahsilatlar <span>${a.tahsilatlar.length} adet</span></h2>
   <div class="kutu">${tah || bos('Henüz tahsilat yok.')}</div>
+  <h2>Notlar <span>${kisiNotlari(a.kisi).length} adet</span></h2>
+  ${kisiNotlari(a.kisi).map(notSatir).join('')}
+  <button class="genis" data-act="notEkle" data-id="${esc(a.kisi)}">＋ Bu kişiye not ekle</button>
   <h2>Çek / Senet</h2>
   ${belgeler ? `<div class="belgeler">${belgeler}</div>` : ''}
   <div class="iki"><label class="btn">📷 Çek ekle<input type="file" accept="image/*" multiple hidden data-belge="cek" data-id="${a.id}"></label>
   <label class="btn">📷 Senet ekle<input type="file" accept="image/*" multiple hidden data-belge="senet" data-id="${a.id}"></label></div>
   <button class="tehlike genis bosluk" data-act="sil" data-id="${a.id}">Alacağı sil</button>`;
+}
+
+const notSatir = n => `<div class="not-kart"><div class="ust"><b>${n.kisi ? esc(n.kisi) : 'Genel'}</b>
+  <span><button class="kucuk" data-act="notDuzenle" data-id="${n.id}">Düzenle</button> <button class="kucuk tehlike" data-act="notSil" data-id="${n.id}" aria-label="Notu sil">✕</button></span></div>
+  <p>${esc(n.metin)}</p><small>${tarihYaz(n.tarih)}</small></div>`;
+const kisiNotlari = kisi => S.notlar.filter(n => n.kisi.trim().toLocaleLowerCase('tr') === kisi.trim().toLocaleLowerCase('tr'));
+
+function notlarHTML() {
+  const l = [...S.notlar].sort((x, y) => (x.tarih < y.tarih ? 1 : -1));
+  return `<h1>Notlar</h1>${l.map(notSatir).join('') || bos('Henüz not yok.<br>Sağ alttaki <b>+</b> ile not ekleyin.')}`;
+}
+
+async function notFormu(n = { kisi: '' }) {
+  const adlar = [...new Set(S.alacaklar.map(a => a.kisi.trim()))];
+  const f = await formAc(n.id ? 'Notu düzenle' : 'Yeni not', `
+    <label>Kişi (isteğe bağlı)<input name="kisi" list="kisi-listesi" value="${esc(n.kisi)}" autocomplete="off" placeholder="Boş bırakılırsa genel not">
+    <datalist id="kisi-listesi">${adlar.map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>
+    <label>Not<textarea name="metin" rows="5" required>${esc(n.metin)}</textarea></label>`);
+  if (!f) return;
+  const y = { ...n, id: n.id || yeniId(), tarih: n.tarih || bugun(), kisi: f.elements.kisi.value.trim(), metin: f.elements.metin.value.trim() };
+  S.notlar = n.id ? S.notlar.map(x => (x.id === n.id ? y : x)) : [y, ...S.notlar];
+  await kaydet();
+  render();
 }
 
 function raporHTML() {
@@ -261,6 +294,12 @@ function ayarlarHTML() {
   <h2>Banka hesapları ve kartlar</h2>
   <div class="kutu">${h || bos('Henüz hesap / kart yok.')}</div>
   <button class="genis" data-act="hesapEkle">＋ Hesap / kart ekle</button>
+  <h2>Bildirimler</h2>
+  <div class="kutu metin"><p>${!S.bildirim ? 'Kapalı. Açarsanız vadesi gelen ve geciken ödemeler için günde bir kez bildirim gelir.'
+    : arkaPlan ? '🔔 Açık. Telefon günde bir kez, uygulama kapalıyken de kontrol edip bildirim gönderir.'
+    : '🔔 Açık. Bu cihaz uygulama kapalıyken kontrol edemiyor; hatırlatma uygulamayı açtığınızda gelir. Ana ekrana eklenmiş uygulamada arka plan kontrolü genelde çalışır.'}</p>
+  ${S.bildirim ? `<label>Kaç gün önceden hatırlatılsın<select data-ayar="gun">${[0, 1, 3, 7].map(g => `<option value="${g}" ${S.bildirim.gun === g ? 'selected' : ''}>${g ? `${g} gün önce` : 'Vade günü'}</option>`).join('')}</select></label><p></p>` : ''}</div>
+  <div class="iki">${S.bildirim ? '<button data-act="bildirimTest">Deneme bildirimi</button><button class="tehlike" data-act="bildirimKapat">Kapat</button>' : '<button class="birincil" data-act="bildirimAc">🔔 Bildirimleri aç</button>'}</div>
   <h2>Güvenlik</h2>
   <div class="kutu metin"><p>${S.pin ? '🔒 PIN kilidi açık. Uygulama açılırken ve 1 dakikadan uzun arka planda kaldıktan sonra PIN sorulur.' : 'PIN kilidi kapalı.'}</p></div>
   <div class="iki"><button data-act="pinAyarla">${S.pin ? 'PIN değiştir' : 'PIN belirle'}</button>${S.pin ? '<button class="tehlike" data-act="pinKaldir">PIN kaldır</button>' : ''}</div>
@@ -272,10 +311,12 @@ function ayarlarHTML() {
 
 function render() {
   const [, yol, p] = location.hash.split('/');
-  $('#main').innerHTML = yol === 'a' ? detayHTML(p) : yol === 'rapor' ? raporHTML() : yol === 'ayarlar' ? ayarlarHTML() : listeHTML();
-  const sekme = yol === 'rapor' || yol === 'ayarlar' ? yol : 'liste';
+  $('#main').innerHTML = yol === 'a' ? detayHTML(p) : yol === 'rapor' ? raporHTML() : yol === 'ayarlar' ? ayarlarHTML() : yol === 'notlar' ? notlarHTML() : listeHTML();
+  const sekme = ['rapor', 'ayarlar', 'notlar'].includes(yol) ? yol : 'liste';
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('aktif', a.dataset.sekme === sekme));
-  $('.fab').hidden = !!yol;
+  $('.fab').hidden = !!yol && yol !== 'notlar';
+  $('.fab').dataset.act = yol === 'notlar' ? 'notEkle' : 'yeni';
+  $('.fab').ariaLabel = yol === 'notlar' ? 'Yeni not' : 'Yeni alacak';
 }
 
 // ---- Olaylar ----
@@ -285,6 +326,35 @@ const eylem = {
   tahsilat: i => tahsilatFormu(bul(i)),
   filtre: i => { filtre = i; render(); },
   kisi: ad => { ara = ad; filtre = 'hepsi'; location.hash = '#/'; },
+  async bildirimAc() {
+    if (!('Notification' in window) || !navigator.serviceWorker) return alert('Bu tarayıcı bildirim desteklemiyor.');
+    if ((await Notification.requestPermission()) !== 'granted') return alert('Bildirim izni verilmedi. Telefonun ayarlarından Vade (ya da Chrome) için bildirimlere izin verin.');
+    S.bildirim = { gun: 3 };
+    await kaydet();
+    const r = await navigator.serviceWorker.ready;
+    try {
+      await r.periodicSync.register('vade-hatirlat', { minInterval: 12 * 36e5 });
+      arkaPlan = true;
+    } catch { arkaPlan = false; } // ana ekrana eklenmemişse ya da tarayıcı desteklemiyorsa; ayarlarda yazılı olarak gösterilir
+    r.active?.postMessage('hatirlat');
+    render();
+  },
+  async bildirimKapat() {
+    delete S.bildirim;
+    await kaydet();
+    (await navigator.serviceWorker.ready).periodicSync?.unregister('vade-hatirlat');
+    arkaPlan = false;
+    render();
+  },
+  async bildirimTest() { (await navigator.serviceWorker.ready).active.postMessage('test'); },
+  notEkle: kisi =>notFormu({ kisi: kisi || '' }),
+  notDuzenle: i => notFormu(S.notlar.find(n => n.id === i)),
+  async notSil(i) {
+    if (!confirm('Bu not silinsin mi?')) return;
+    S.notlar = S.notlar.filter(n => n.id !== i);
+    await kaydet();
+    render();
+  },
   async pinAyarla() {
     const f = await formAc('PIN belirle', `
       <p class="not">PIN'i unutursanız uygulamaya girilemez. Yedek dosyanız varsa uygulamayı silip yeniden kurarak yedeği yükleyebilirsiniz; bu yüzden önce yedek alın.</p>
@@ -349,10 +419,24 @@ document.addEventListener('click', e => {
   if (b) { e.preventDefault(); eylem[b.dataset.act](b.dataset.id, b); }
 });
 document.addEventListener('input', e => {
-  if (e.target.classList.contains('ara')) { ara = e.target.value; $('#kartlar').innerHTML = kartlar(); }
+  const t = e.target;
+  if (t.classList.contains('ara')) { ara = t.value; $('#kartlar').innerHTML = kartlar(); }
+  if (t.classList.contains('tl')) {
+    let v = t.value, pos = t.selectionStart;
+    // Yazılan/yapıştırılan "." ya da "12.5" ondalıktır; "1.250.000" gibi binlik noktalar olduğu gibi kalır.
+    const d = e.data;
+    if (d && /^\d*\.\d{0,2}$/.test(d)) v = v.slice(0, pos - d.length) + d.replace('.', ',') + v.slice(pos);
+    const once = v.slice(0, pos).replace(/[^\d,]/g, '').length; // imleçten önceki rakam sayısı korunur
+    const y = tlBicimle(v);
+    let i = 0;
+    for (let n = 0; i < y.length && n < once; i++) if (/[\d,]/.test(y[i])) n++;
+    t.value = y;
+    t.setSelectionRange(i, i);
+  }
 });
 document.addEventListener('change', async e => {
   const t = e.target;
+  if (t.dataset.ayar === 'gun') { S.bildirim.gun = Number(t.value); await kaydet(); }
   if (t.dataset.belge) {
     const a = bul(t.dataset.id);
     try {
@@ -366,8 +450,9 @@ document.addEventListener('change', async e => {
       const d = JSON.parse(await t.files[0].text());
       if (!Array.isArray(d.alacaklar) || !Array.isArray(d.hesaplar)) throw new Error('Bu dosya geçerli bir Vade yedeği değil.');
       if (!confirm(`${d.alacaklar.length} alacak içeren yedek yüklenecek. Telefondaki mevcut veriler silinip yerine yazılacak. Devam edilsin mi?`)) return;
-      S = { ...d, pin: S.pin }; // bu telefondaki PIN geçerli kalır
+      S = { notlar: [], ...d, pin: S.pin, bildirim: S.bildirim }; // bu cihazın PIN ve bildirim ayarı geçerli kalır
       if (!S.pin) delete S.pin;
+      if (!S.bildirim) delete S.bildirim;
       await kaydet();
       render();
       alert('Yedek yüklendi.');

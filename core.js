@@ -10,7 +10,14 @@ export function parseTL(s) {
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : NaN;
 }
 
-export const fmtTL = k => (k / 100).toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
+// Yazarken biçimlendirme: "1000000,5" → "1.000.000,5". Noktalar binlik ayırıcıdır, ondalık virgüldür.
+export function tlBicimle(s) {
+  const [tam, ...ond] = String(s).replace(/[^\d,]/g, '').split(',');
+  const y = tam.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return ond.length ? `${y},${ond.join('').slice(0, 2)}` : y;
+}
+
+export const fmtTL =k => (k / 100).toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
 export const tlYaz = k => (k / 100).toLocaleString('tr-TR', { maximumFractionDigits: 2 });
 
 export const bugun = () => new Date().toLocaleDateString('sv'); // yerel YYYY-MM-DD
@@ -49,6 +56,26 @@ export function durum(a, today = bugun()) {
   if (kalan(a) === 0) return 'kapandi';
   if (geciken(a, today) > 0) return 'gecmis';
   return 'acik';
+}
+
+// Vadesi geçmiş ya da `gun` gün içinde gelecek açık ödemeler; tutar o vadede ödenmesi gereken kısım.
+export function hatirlatmalar(list, gun = 3, today = bugun()) {
+  const sinir = new Date(Date.parse(today) + gun * 864e5).toISOString().slice(0, 10);
+  return list.filter(a => kalan(a) > 0).map(a => {
+    const t = taksitPlani(a).find(x => x.odenen < x.tutar);
+    if (!t || t.vade > sinir) return null;
+    return { a, vade: t.vade, gecikti: t.vade < today, tutar: t.vade < today ? geciken(a, today) : t.tutar - t.odenen };
+  }).filter(Boolean).sort((x, y) => (x.vade < y.vade ? -1 : 1));
+}
+
+export function bildirimMetni(list, gun, today = bugun()) {
+  const l = hatirlatmalar(list, gun, today);
+  if (!l.length) return null;
+  const gec = l.filter(x => x.gecikti).length, yak = l.length - gec;
+  const baslik = [gec && `${gec} ödeme gecikti`, yak && `${yak} ödeme yaklaşıyor`].filter(Boolean).join(', ');
+  const ne = x => (x.gecikti ? 'gecikti' : x.vade === today ? 'bugün' : `${gunFark(x.vade, today)} gün sonra`);
+  const govde = l.slice(0, 5).map(x => `${x.a.kisi}: ${fmtTL(x.tutar)} · ${ne(x)}`).join('\n') + (l.length > 5 ? `\n+${l.length - 5} ödeme daha` : '');
+  return { baslik, govde };
 }
 
 export function rapor(list, today = bugun()) {
